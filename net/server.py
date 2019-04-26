@@ -3,7 +3,7 @@
 @Description: 服务端socket通信
 @Author: lamborghini1993
 @Date: 2019-04-24 17:03:31
-@UpdateDate: 2019-04-25 15:58:15
+@UpdateDate: 2019-04-26 11:28:44
 '''
 
 import logging
@@ -47,6 +47,9 @@ class CBaseServer:
         self.m_RecvBuff = {}    # fileno:data
         self.m_SendBuff = {}    # fileno:data
 
+        self.m_Fileno2User = {}  # id:fileno
+        self.m_FilenoNum = {}       #
+
     def _InitServer(self):
         """初始化服务器套接字"""
         self.m_Server = socket.socket()
@@ -62,7 +65,9 @@ class CBaseServer:
         self._InitServer()
 
     def CloseClient(self, fileno: int, reason: str = ""):
-        logging.warning("fileno(%s) close,reason:%s" % (fileno, reason))
+        tt = self.m_Fileno2User.get(fileno, fileno)
+        num = self.m_FilenoNum.get(fileno, 0)
+        logging.warning("%s close,%s num,reason:%s" % (tt, num, reason))
         if fileno not in self.m_SocketInfo:
             return
         conn = self.m_SocketInfo[fileno]
@@ -108,13 +113,15 @@ class CBaseServer:
         conn = self.m_SocketInfo[fileno]
         data = self.m_SendBuff.get(fileno, b"")
         while data:
-            try:
-                conn.send(data[:self.m_MaxBuff])
-            except:
-                self.CloseClient(fileno, "send error")
-                return
+            conn.send(data[:self.m_MaxBuff])
+
+            # try:
+            #     conn.send(data[:self.m_MaxBuff])
+            # except:
+            #     self.CloseClient(fileno, "send error")
+            #     return
             data = data[self.m_MaxBuff:]
-        self.m_SocketInfo[fileno] = b""
+        self.m_SendBuff[fileno] = b""
 
     def SocketRecv(self, fileno: int):
         conn = self.m_SocketInfo[fileno]
@@ -133,17 +140,18 @@ class CBaseServer:
             if iLen < 4:
                 return
             sSize = sRecvData[:4]
-            iSize, _ = struct.unpack("i", sSize)
+            iSize = struct.unpack("i", sSize)[0]
             if iSize > iLen:
                 break
             sPackage = sRecvData[:iSize]
             sRecvData = sRecvData[iSize:]
             try:
                 dData = _Deserialization(sPackage)
-                print("recv(%s) %s" % (fileno, dData))
+                # print("recv(%s) %s" % (fileno, dData))
             except:
                 self.CloseClient(fileno, "_Deserialization error")
                 return
+            self.Command(fileno, dData)
         self.m_RecvBuff[fileno] = sRecvData
 
     def Send(self, fileno: int, data: dict):
@@ -152,8 +160,21 @@ class CBaseServer:
             self.m_SendBuff[fileno] = b""
         self.m_SendBuff[fileno] += sData
 
-    def Test(self, fileno: int, dData: dict):
-        dReply = {"reply": True}
+    def Command(self, fileno: int, dData: dict):
+        """解析协议"""
+        from pubcode.pubfunc import pubmisc
+        if "user" in dData:
+            user = dData["user"]
+            self.m_Fileno2User[fileno] = user
+            # self.m_UserLogger[fileno] = pubmisc.SetLogger(str(user), "log/%s.log" % user)
+            self.Send(fileno, {"user": True})
+            return
+        # logger = self.m_UserLogger[fileno]
+        user = self.m_Fileno2User[fileno]
+        num = dData["num"]
+        self.m_FilenoNum[fileno] = num
+        # logging.debug("%s %s" % (user, num))
+        dReply = {"reply": num}
         self.Send(fileno, dReply)
 
 
@@ -184,7 +205,7 @@ class CEpollServer(CBaseServer):
             for fileno, event in events:
                 if fileno == self.m_Server.fileno():
                     cfileno = self.AcceptClient()
-                    self.m_Epoll.register(cfileno, select.EPOLLIN)
+                    self.m_Epoll.register(cfileno, select.EPOLLIN | select.EPOLLOUT)
                 elif event & select.EPOLLIN:
                     self.SocketRecv(fileno)
                 elif event & select.EPOLLOUT:
